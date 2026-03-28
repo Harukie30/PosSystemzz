@@ -34,6 +34,8 @@ import {
   Ban,
   History,
   RefreshCw,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { apiService } from "@/lib/api/apiService";
 import type { Product, ProductMovement } from "@/lib/api/types";
@@ -41,11 +43,15 @@ import { ErrorDisplay } from "@/components/error-display";
 import { ProductOutModal } from "@/components/product-out-modal";
 import { VoidProductOutModal } from "@/components/void-product-out-modal";
 import { VoidedProductOutsHistoryModal } from "@/components/voided-product-outs-history-modal";
+import { EditProductModal, type EditProductFormValues } from "@/components/edit-product-modal";
+import { DeleteProductModal } from "@/components/delete-product-modal";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 /** Minimum time the inventory refresh loading UI stays visible (2–3s range). */
 const PRODUCT_INVENTORY_REFRESH_MIN_MS = 2500;
+const PRODUCT_EDIT_SAVE_MIN_MS = 2000;
 
 function delay(ms: number) {
   return new Promise<void>((resolve) => {
@@ -65,6 +71,10 @@ export default function ProductsPage() {
   const [error, setError] = useState<string | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [movements, setMovements] = useState<ProductMovement[]>([]);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isSavingProduct, setIsSavingProduct] = useState(false);
+  const [deletingProduct, setDeletingProduct] = useState<Product | null>(null);
+  const [isDeletingProduct, setIsDeletingProduct] = useState(false);
   const [newProduct, setNewProduct] = useState({
     name: "",
     sku: "",
@@ -176,6 +186,77 @@ export default function ProductsPage() {
     } catch (error) {
       console.error("Error adding product:", error);
       setError(error instanceof Error ? error.message : "Failed to add product. Please try again.");
+    }
+  };
+
+  const openEditProductDialog = (product: Product) => {
+    setError(null);
+    setEditingProduct(product);
+  };
+
+  const handleUpdateProduct = async (formValues: EditProductFormValues) => {
+    if (!editingProduct) return;
+
+    setIsSavingProduct(true);
+    setError(null);
+    try {
+      const startedAt = Date.now();
+      const result = await apiService.products.update({
+        id: editingProduct.id,
+        name: formValues.name.trim(),
+        sku: formValues.sku.trim() || undefined,
+        stock: parseInt(formValues.stock, 10),
+        price: parseFloat(formValues.price),
+        category: formValues.category.trim(),
+        image: formValues.image.trim() || undefined,
+      });
+
+      if (!result.success) {
+        setError(result.error || "Failed to update product");
+        return;
+      }
+
+      const elapsed = Date.now() - startedAt;
+      await delay(Math.max(0, PRODUCT_EDIT_SAVE_MIN_MS - elapsed));
+
+      await refreshProductsAndMovements();
+      toast.success("Product updated", {
+        description: `${formValues.name.trim()} was updated successfully.`,
+      });
+      setEditingProduct(null);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to update product. Please try again."
+      );
+    } finally {
+      setIsSavingProduct(false);
+    }
+  };
+
+  const handleDeleteProduct = async () => {
+    if (!deletingProduct) return;
+
+    setIsDeletingProduct(true);
+    setError(null);
+    try {
+      const result = await apiService.products.delete(deletingProduct.id);
+      if (!result.success) {
+        setError(result.error || "Failed to delete product");
+        return;
+      }
+
+      await refreshProductsAndMovements();
+      setDeletingProduct(null);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to delete product. Please try again."
+      );
+    } finally {
+      setIsDeletingProduct(false);
     }
   };
 
@@ -495,6 +576,7 @@ export default function ProductsPage() {
                   <TableHead>Category</TableHead>
                   <TableHead>Stock</TableHead>
                   <TableHead className="text-right">Price</TableHead>
+                  <TableHead className="text-right w-[160px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -516,6 +598,9 @@ export default function ProductsPage() {
                       <TableCell className="text-right">
                         <Skeleton className="ml-auto h-4 w-16" />
                       </TableCell>
+                      <TableCell className="text-right">
+                        <Skeleton className="ml-auto h-8 w-28" />
+                      </TableCell>
                     </TableRow>
                   ))
                 ) : filteredProducts.length > 0 ? (
@@ -534,11 +619,34 @@ export default function ProductsPage() {
                       <TableCell className="text-right font-medium">
                         ₱{product.price.toFixed(2)}
                       </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openEditProductDialog(product)}
+                          >
+                            <Pencil className="mr-1.5 h-3.5 w-3.5" />
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            onClick={() => setDeletingProduct(product)}
+                          >
+                            <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                            Delete
+                          </Button>
+                        </div>
+                      </TableCell>
                     </TableRow>
                   ))
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                       No products found
                     </TableCell>
                   </TableRow>
@@ -644,6 +752,28 @@ export default function ProductsPage() {
           }}
           movement={voidMovement}
           onSuccess={refreshProductsAndMovements}
+        />
+
+        <EditProductModal
+          product={editingProduct}
+          open={editingProduct !== null}
+          saving={isSavingProduct}
+          onOpenChange={(open: boolean) => {
+            if (!open && !isSavingProduct) setEditingProduct(null);
+          }}
+          onSubmit={handleUpdateProduct}
+          onCancel={() => setEditingProduct(null)}
+        />
+
+        <DeleteProductModal
+          product={deletingProduct}
+          open={deletingProduct !== null}
+          deleting={isDeletingProduct}
+          onOpenChange={(open: boolean) => {
+            if (!open && !isDeletingProduct) setDeletingProduct(null);
+          }}
+          onConfirm={handleDeleteProduct}
+          onCancel={() => setDeletingProduct(null)}
         />
     </DashboardShell>
 
